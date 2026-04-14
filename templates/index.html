@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>进度监控中心</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+        .progress-bar { transition: width 0.6s ease; }
+        .sidebar-item { transition: all 0.15s ease; }
+        .sidebar-item:hover { background-color: #f0f4ff; }
+        .sidebar-item.active { background-color: #e8edff; border-left: 3px solid #4f6ef7; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); }
+        .stat-card { padding: 16px 20px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .status-running { background-color: #22c55e; animation: pulse 2s infinite; }
+        .status-completed { background-color: #94a3b8; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .eta-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- 顶部导航 -->
+    <nav class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
+                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+            </div>
+            <span class="text-lg font-semibold text-gray-800">进度监控中心</span>
+        </div>
+        <div id="refresh-info" class="text-sm text-gray-400">加载中...</div>
+    </nav>
+
+    <div class="flex" style="height: calc(100vh - 53px);">
+        <!-- 左侧运行列表 -->
+        <div class="w-72 bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0">
+            <div class="p-4 border-b border-gray-100">
+                <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wide">运行列表</h2>
+                <input id="search-input" type="text" placeholder="搜索任务名称..."
+                       class="mt-2 w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-indigo-400"
+                       oninput="searchKeyword = this.value; renderRunList(allRuns)">
+            </div>
+            <div id="run-list" class="divide-y divide-gray-50">
+                <div class="p-6 text-center text-gray-400 text-sm">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 右侧主内容 -->
+        <div class="flex-1 overflow-y-auto p-6" id="main-content">
+            <div id="empty-state" class="flex flex-col items-center justify-center h-full text-gray-400">
+                <svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                <p class="text-lg">选择一个运行记录查看详情</p>
+                <p class="text-sm mt-1">或等待新的运行任务启动</p>
+            </div>
+            <div id="detail-view" class="hidden">
+                <!-- 顶部概览 -->
+                <div class="card mb-6 p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 id="detail-title" class="text-xl font-semibold text-gray-800"></h2>
+                            <p id="detail-subtitle" class="text-sm text-gray-500 mt-1"></p>
+                            <p id="detail-filepath" class="text-xs text-gray-400 mt-1 font-mono"></p>
+                        </div>
+                        <span id="detail-status" class="px-3 py-1 rounded-full text-sm font-medium"></span>
+                    </div>
+                    <!-- 进度条 -->
+                    <div class="w-full bg-gray-100 rounded-full h-3 mb-4">
+                        <div id="detail-progress-bar" class="bg-indigo-500 h-3 rounded-full progress-bar" style="width: 0%"></div>
+                    </div>
+                    <!-- 统计卡片 -->
+                    <div class="grid grid-cols-5 gap-4">
+                        <div class="stat-card bg-gray-50 rounded-lg">
+                            <div class="text-xs text-gray-500 mb-1">已用时间</div>
+                            <div id="stat-elapsed" class="text-lg font-semibold text-gray-800">--</div>
+                        </div>
+                        <div class="stat-card bg-gray-50 rounded-lg">
+                            <div class="text-xs text-gray-500 mb-1">预计剩余</div>
+                            <div id="stat-remaining" class="text-lg font-semibold text-gray-800">--</div>
+                        </div>
+                        <div class="stat-card bg-gray-50 rounded-lg">
+                            <div class="text-xs text-gray-500 mb-1">吞吐量</div>
+                            <div id="stat-throughput" class="text-lg font-semibold text-gray-800">--</div>
+                        </div>
+                        <div class="stat-card bg-gray-50 rounded-lg">
+                            <div class="text-xs text-gray-500 mb-1">进度</div>
+                            <div id="stat-progress" class="text-lg font-semibold text-gray-800">--</div>
+                        </div>
+                        <div class="stat-card bg-gray-50 rounded-lg">
+                            <div class="text-xs text-gray-500 mb-1">最后备份</div>
+                            <div id="stat-last-backup" class="text-lg font-semibold text-gray-800">--</div>
+                        </div>
+                    </div>
+                    <!-- ETA 对比 -->
+                    <div id="eta-comparison" class="mt-4 hidden">
+                        <div class="text-xs text-gray-500 mb-2">剩余时间估算对比</div>
+                        <div class="flex flex-wrap gap-2">
+                            <span id="eta-global" class="eta-tag bg-blue-50 text-blue-700"></span>
+                            <span id="eta-window" class="eta-tag bg-emerald-50 text-emerald-700"></span>
+                            <span id="eta-ewma" class="eta-tag bg-amber-50 text-amber-700"></span>
+                            <span id="eta-median" class="eta-tag bg-purple-50 text-purple-700"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 图表区域 -->
+                <div class="grid grid-cols-1 gap-6">
+                    <div class="card p-4">
+                        <h3 class="text-sm font-medium text-gray-600 mb-3">备份间隔时长变化</h3>
+                        <div id="chart-interval" style="height: 300px;"></div>
+                    </div>
+                    <div class="card p-4">
+                        <h3 class="text-sm font-medium text-gray-600 mb-3">剩余时间估算对比</h3>
+                        <div id="chart-eta" style="height: 300px;"></div>
+                    </div>
+                    <div class="card p-4">
+                        <h3 class="text-sm font-medium text-gray-600 mb-3">累计吞吐量变化</h3>
+                        <div id="chart-throughput" style="height: 300px;"></div>
+                    </div>
+                    <div class="card p-4">
+                        <h3 class="text-sm font-medium text-gray-600 mb-3">瞬时吞吐量变化</h3>
+                        <div id="chart-instant-throughput" style="height: 300px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// ==================== 全局状态 ====================
+let currentRunId = null;
+let allRuns = [];
+let searchKeyword = '';
+let chartInterval = null;
+let chartEta = null;
+let chartThroughput = null;
+let chartInstantThroughput = null;
+let pollingTimer = null;
+let wasCurrentRunning = false;  // 追踪当前选中任务是否之前在运行
+
+// ==================== 工具函数 ====================
+function formatDuration(secs) {
+    if (!secs || secs <= 0) return '--';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    if (h > 0) return `${h}h${m}m`;
+    if (m > 0) return `${m}m${s}s`;
+    return `${s}s`;
+}
+
+function formatThroughput(t) {
+    if (!t || t <= 0) return '--';
+    if (t >= 1000) return (t / 1000).toFixed(1) + 'k 条/秒';
+    return t.toFixed(0) + ' 条/秒';
+}
+
+function formatTimestamp(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts);
+    const MM = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${MM}-${dd} ${hh}:${mm}:${ss}`;
+}
+
+// ==================== 侧边栏 ====================
+function renderRunList(runs) {
+    const container = document.getElementById('run-list');
+    const filtered = searchKeyword
+        ? runs.filter(r => r.backup_file.toLowerCase().includes(searchKeyword.toLowerCase()))
+        : runs;
+    if (!filtered.length) {
+        container.innerHTML = `<div class="p-6 text-center text-gray-400 text-sm">${searchKeyword ? '无匹配结果' : '暂无运行记录'}</div>`;
+        return;
+    }
+    container.innerHTML = filtered.map(run => {
+        const isActive = run.run_id === currentRunId;
+        const statusClass = run.is_running ? 'status-running' : 'status-completed';
+        const statusText = run.is_running ? '运行中' : '已完成';
+        const progressPct = (run.progress * 100).toFixed(1);
+        return `
+            <div class="sidebar-item p-4 cursor-pointer ${isActive ? 'active' : ''}"
+                 onclick="selectRun('${run.run_id}')">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="status-dot ${statusClass}"></span>
+                    <span class="text-sm font-medium text-gray-800 truncate">${run.backup_file}</span>
+                </div>
+                <div class="text-xs text-gray-400 ml-4">
+                    #${run.run_id} · ${statusText} · ${progressPct}%
+                </div>
+                <div class="mt-2 ml-4">
+                    <div class="w-full bg-gray-100 rounded-full h-1.5">
+                        <div class="bg-indigo-400 h-1.5 rounded-full" style="width: ${progressPct}%"></div>
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+}
+
+// ==================== 选择运行 ====================
+async function selectRun(runId) {
+    currentRunId = runId;
+    const run = allRuns.find(r => r.run_id === runId);
+    wasCurrentRunning = run ? run.is_running : false;
+    renderRunList(allRuns);
+    document.getElementById('empty-state').classList.add('hidden');
+    document.getElementById('detail-view').classList.remove('hidden');
+    await loadRunDetail(runId);
+}
+
+// ==================== 加载运行详情 ====================
+async function loadRunDetail(runId) {
+    const resp = await fetch(`/api/runs/${runId}`);
+    const data = await resp.json();
+    if (data.error) return;
+    renderDetail(data);
+}
+
+function renderDetail(data) {
+    // 标题
+    document.getElementById('detail-title').textContent = data.meta.start_ts || data.run_id;
+    // 状态标签
+    const statusEl = document.getElementById('detail-status');
+    if (data.status === 'completed') {
+        statusEl.textContent = '已完成';
+        statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600';
+    } else {
+        statusEl.textContent = '运行中';
+        statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium bg-green-50 text-green-700';
+    }
+    // 副标题
+    const meta = data.meta;
+    const subtitleParts = [`批次: ${data.batches.length}/${data.total_batches}`];
+    if (meta.total_tasks) subtitleParts.push(`任务: ${meta.total_tasks}`);
+    if (meta.total_dates) subtitleParts.push(`日期: ${meta.total_dates}`);
+    document.getElementById('detail-subtitle').textContent = subtitleParts.join(' · ');
+    document.getElementById('detail-filepath').textContent = data.filepath || '';
+
+    // 进度条
+    const batchCount = data.batches.length;
+    const progress = data.total_batches > 0 ? Math.min(batchCount / data.total_batches, 1.0) : 0;
+    document.getElementById('detail-progress-bar').style.width = (progress * 100) + '%';
+
+    // 统计卡片
+    const lastElapsed = data.elapsed.length ? data.elapsed[data.elapsed.length - 1] : 0;
+    const lastCollected = data.collected.length ? data.collected[data.collected.length - 1] : 0;
+    const lastThroughput = data.throughput.length ? data.throughput[data.throughput.length - 1] : 0;
+    document.getElementById('stat-elapsed').textContent = formatDuration(lastElapsed);
+    document.getElementById('stat-throughput').textContent = formatThroughput(lastThroughput);
+    document.getElementById('stat-progress').textContent = (progress * 100).toFixed(1) + '%';
+    document.getElementById('stat-last-backup').textContent = data.timestamps && data.timestamps.length > 0
+        ? formatTimestamp(data.timestamps[data.timestamps.length - 1]) : '--';
+
+    // ETA 对比
+    if (data.eta_series && data.eta_series.global_avg && data.eta_series.global_avg.length > 0) {
+        document.getElementById('eta-comparison').classList.remove('hidden');
+        const lastIdx = data.eta_series.global_avg.length - 1;
+        document.getElementById('eta-global').textContent = '全局平均: ' + formatDuration(data.eta_series.global_avg[lastIdx]);
+        document.getElementById('eta-window').textContent = '最近5次: ' + formatDuration(data.eta_series.window_5[lastIdx]);
+        document.getElementById('eta-ewma').textContent = 'EWMA: ' + formatDuration(data.eta_series.ewma[lastIdx]);
+        document.getElementById('eta-median').textContent = '中位数: ' + formatDuration(data.eta_series.median[lastIdx]);
+        // 取 window_5 作为主预估值
+        document.getElementById('stat-remaining').textContent = formatDuration(data.eta_series.window_5[lastIdx]);
+    } else {
+        document.getElementById('eta-comparison').classList.add('hidden');
+        document.getElementById('stat-remaining').textContent = '--';
+    }
+
+    // 渲染图表
+    renderIntervalChart(data);
+    renderEtaChart(data);
+    renderThroughputChart(data);
+    renderInstantThroughputChart(data);
+}
+
+// ==================== 图表通用配色 ====================
+const chartColors = ['#4f6ef7', '#22c55e', '#f59e0b', '#a855f7'];
+
+function baseChartOption(timestamps) {
+    return {
+        grid: { left: 60, right: 20, top: 30, bottom: 40 },
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#fff',
+            borderColor: '#e5e7eb',
+            textStyle: { color: '#374151' },
+            formatter: function(params) {
+                if (!params || !params.length) return '';
+                const idx = params[0].dataIndex;
+                const ts = timestamps && timestamps[idx] ? formatTimestamp(timestamps[idx]) : '';
+                let html = `<div style="font-weight:600;margin-bottom:4px">备份 #${params[0].axisValue}</div>`;
+                if (ts) html += `<div style="font-size:12px;color:#6b7280;margin-bottom:4px">${ts}</div>`;
+                params.forEach(p => {
+                    html += `<div style="display:flex;align-items:center;gap:6px">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color}"></span>
+                        <span>${p.seriesName}: ${p.value != null ? p.value : '--'}</span>
+                    </div>`;
+                });
+                return html;
+            }
+        },
+        xAxis: { type: 'category', axisLine: { lineStyle: { color: '#e5e7eb' } }, axisLabel: { color: '#6b7280' } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f3f4f6' } }, axisLabel: { color: '#6b7280' } },
+    };
+}
+
+// ==================== 备份间隔时长图表 ====================
+function renderIntervalChart(data) {
+    if (!chartInterval) {
+        chartInterval = echarts.init(document.getElementById('chart-interval'));
+    }
+    const batches = data.batches;
+    const intervals = data.intervals;
+    const timestamps = data.timestamps || [];
+    const base = baseChartOption(timestamps);
+    // EWMA 计算
+    const alpha = 0.3;
+    let ewma = intervals.length > 0 ? intervals[0] : 0;
+    const ewmaLine = [ewma];
+    for (let i = 1; i < intervals.length; i++) {
+        ewma = alpha * intervals[i] + (1 - alpha) * ewma;
+        ewmaLine.push(ewma);
+    }
+    const option = {
+        ...base,
+        legend: { data: ['间隔时长', 'EWMA'], top: 0, textStyle: { color: '#6b7280', fontSize: 12 } },
+        xAxis: { ...base.xAxis, data: batches.map(String), name: '备份序号' },
+        yAxis: { ...base.yAxis, name: '秒' },
+        series: [
+            {
+                name: '间隔时长', type: 'line', data: intervals,
+                symbol: 'circle', symbolSize: 4,
+                lineStyle: { color: chartColors[0], width: 2 },
+                itemStyle: { color: chartColors[0] },
+            },
+            {
+                name: 'EWMA', type: 'line', data: ewmaLine,
+                smooth: true, symbol: 'none',
+                lineStyle: { color: chartColors[2], width: 2, type: 'dashed' },
+                itemStyle: { color: chartColors[2] },
+            },
+        ],
+    };
+    chartInterval.setOption(option, true);
+}
+
+// ==================== ETA 估算对比图表 ====================
+function renderEtaChart(data) {
+    if (!chartEta) {
+        chartEta = echarts.init(document.getElementById('chart-eta'));
+    }
+    const batches = data.batches;
+    const etaSeries = data.eta_series;
+    const timestamps = data.timestamps || [];
+    const base = baseChartOption(timestamps);
+    if (!etaSeries || !etaSeries.global_avg || etaSeries.global_avg.length === 0) {
+        chartEta.setOption({ title: { text: '暂无 ETA 数据', left: 'center', top: 'center', textStyle: { color: '#9ca3af' } } }, true);
+        return;
+    }
+    const names = ['全局平均', '最近5次', 'EWMA', '中位数'];
+    const keys = ['global_avg', 'window_5', 'ewma', 'median'];
+    const series = keys.map((key, i) => ({
+        name: names[i], type: 'line', data: etaSeries[key].map(v => v > 0 ? v / 3600 : null),
+        smooth: true, symbol: 'none',
+        lineStyle: { color: chartColors[i], width: 2 },
+        itemStyle: { color: chartColors[i] },
+    }));
+    const option = {
+        ...base,
+        legend: { data: names, top: 0, textStyle: { color: '#6b7280', fontSize: 12 } },
+        xAxis: { ...base.xAxis, data: batches.map(String), name: '备份序号' },
+        yAxis: { ...base.yAxis, name: '小时' },
+        series,
+    };
+    chartEta.setOption(option, true);
+}
+
+// ==================== 吞吐量图表 ====================
+function renderThroughputChart(data) {
+    if (!chartThroughput) {
+        chartThroughput = echarts.init(document.getElementById('chart-throughput'));
+    }
+    const batches = data.batches;
+    const throughput = data.throughput;
+    const timestamps = data.timestamps || [];
+    const base = baseChartOption(timestamps);
+    const option = {
+        ...base,
+        xAxis: { ...base.xAxis, data: batches.map(String), name: '备份序号' },
+        yAxis: { ...base.yAxis, name: '条/秒' },
+        series: [{
+            name: '吞吐量', type: 'line', data: throughput,
+            areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: 'rgba(79,110,247,0.3)' },
+                { offset: 1, color: 'rgba(79,110,247,0.02)' },
+            ]) },
+            lineStyle: { color: chartColors[0], width: 2 },
+            itemStyle: { color: chartColors[0] },
+            symbol: 'circle', symbolSize: 4,
+        }],
+    };
+    chartThroughput.setOption(option, true);
+}
+
+// ==================== 瞬时吞吐量图表 ====================
+function renderInstantThroughputChart(data) {
+    if (!chartInstantThroughput) {
+        chartInstantThroughput = echarts.init(document.getElementById('chart-instant-throughput'));
+    }
+    const batches = data.batches;
+    const instantThroughput = data.instant_throughput || [];
+    const timestamps = data.timestamps || [];
+    const base = baseChartOption(timestamps);
+    const option = {
+        ...base,
+        xAxis: { ...base.xAxis, data: batches.map(String), name: '备份序号' },
+        yAxis: { ...base.yAxis, name: '条/秒' },
+        series: [{
+            name: '瞬时吞吐量', type: 'line', data: instantThroughput,
+            areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: 'rgba(34,197,94,0.3)' },
+                { offset: 1, color: 'rgba(34,197,94,0.02)' },
+            ]) },
+            lineStyle: { color: '#22c55e', width: 2 },
+            itemStyle: { color: '#22c55e' },
+            symbol: 'circle', symbolSize: 4,
+        }],
+    };
+    chartInstantThroughput.setOption(option, true);
+}
+
+// ==================== 轮询刷新 ====================
+async function refreshRuns() {
+    try {
+        const resp = await fetch('/api/runs');
+        allRuns = await resp.json();
+        renderRunList(allRuns);
+        document.getElementById('refresh-info').textContent =
+            '最后刷新: ' + new Date().toLocaleTimeString();
+
+        // 如果当前选中的是运行中的任务，或者刚从运行中变为已完成，刷新详情
+        if (currentRunId) {
+            const currentRun = allRuns.find(r => r.run_id === currentRunId);
+            if (currentRun && (currentRun.is_running || wasCurrentRunning)) {
+                wasCurrentRunning = currentRun.is_running;
+                await loadRunDetail(currentRunId);
+            }
+        }
+
+        // 自动选中新出现的运行中任务（如果没有选中任何任务）
+        if (!currentRunId && allRuns.length > 0) {
+            const running = allRuns.find(r => r.is_running);
+            if (running) {
+                await selectRun(running.run_id);
+            } else {
+                await selectRun(allRuns[0].run_id);
+            }
+        }
+    } catch (e) {
+        console.error('刷新失败:', e);
+    }
+}
+
+// ==================== 初始化 ====================
+window.addEventListener('resize', () => {
+    chartInterval && chartInterval.resize();
+    chartEta && chartEta.resize();
+    chartThroughput && chartThroughput.resize();
+});
+
+refreshRuns();
+pollingTimer = setInterval(refreshRuns, 3000);
+</script>
+</body>
+</html>
