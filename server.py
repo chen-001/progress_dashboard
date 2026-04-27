@@ -326,6 +326,61 @@ async def api_run_latest(run_id: str):
     return JSONResponse({"error": "run not found"}, status_code=404)
 
 
+@app.delete("/api/runs/{run_id}")
+async def api_delete_run(run_id: str):
+    """删除指定 run/job 的所有记录（从 JSONL 文件中移除）"""
+    # run_id 可能是 job_id（多个 run_id 用 + 拼接），也可能是单个 run_id
+    run_ids_to_remove = set(run_id.split("+"))
+
+    # 找到该 run 所在的文件
+    pattern = os.path.join(WATCH_DIR, "**", PATTERN)
+    files = glob.glob(pattern, recursive=True)
+    target_file = None
+    for filepath in files:
+        jobs = build_jobs(filepath)
+        for job in jobs:
+            if job["job_id"] == run_id:
+                target_file = filepath
+                break
+        if target_file:
+            break
+
+    if not target_file:
+        return JSONResponse({"error": "run not found"}, status_code=404)
+
+    # 读取原文件，过滤掉需要删除的 run_id
+    remaining_lines = []
+    removed_count = 0
+    try:
+        with open(target_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line_stripped = line.strip()
+                if not line_stripped:
+                    continue
+                try:
+                    record = json.loads(line_stripped)
+                except json.JSONDecodeError:
+                    remaining_lines.append(line)
+                    continue
+                if record.get("run_id") in run_ids_to_remove:
+                    removed_count += 1
+                else:
+                    remaining_lines.append(line)
+    except FileNotFoundError:
+        return JSONResponse({"error": "file not found"}, status_code=404)
+
+    # 写回文件
+    with open(target_file, "w", encoding="utf-8") as f:
+        f.writelines(remaining_lines)
+
+    return JSONResponse({
+        "status": "ok",
+        "message": f"已删除 {removed_count} 条记录",
+        "removed": removed_count,
+        "filepath": target_file,
+    })
+
+
 # ==================== 启动入口 ====================
 
 if __name__ == "__main__":

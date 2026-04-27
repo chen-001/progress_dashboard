@@ -19,6 +19,14 @@
         .status-completed { background-color: #94a3b8; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         .eta-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
+.sidebar-item { transition: all 0.15s ease; position: relative; }
+        .sidebar-item:hover { background-color: #f0f4ff; }
+        .sidebar-item.active { background-color: #e8edff; border-left: 3px solid #4f6ef7; }
+        .sidebar-item .delete-btn { opacity: 0; transition: opacity 0.15s ease; }
+        .sidebar-item:hover .delete-btn { opacity: 1; }
+        .delete-btn:hover { color: #ef4444 !important; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-box { background: white; border-radius: 12px; padding: 24px; max-width: 420px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -67,7 +75,15 @@
                             <p id="detail-subtitle" class="text-sm text-gray-500 mt-1"></p>
                             <p id="detail-filepath" class="text-xs text-gray-400 mt-1 font-mono"></p>
                         </div>
-                        <span id="detail-status" class="px-3 py-1 rounded-full text-sm font-medium"></span>
+                        <div class="flex items-center gap-3">
+                            <button id="btn-delete-detail" onclick="confirmDeleteRun(currentRunId, '')"
+                                    class="text-gray-400 hover:text-red-500 transition p-2 rounded-lg hover:bg-red-50" title="删除此任务">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                </svg>
+                            </button>
+                            <span id="detail-status" class="px-3 py-1 rounded-full text-sm font-medium"></span>
+                        </div>
                     </div>
                     <!-- 进度条 -->
                     <div class="w-full bg-gray-100 rounded-full h-3 mb-4">
@@ -191,7 +207,13 @@ function renderRunList(runs) {
                  onclick="selectRun('${run.run_id}')">
                 <div class="flex items-center gap-2 mb-1">
                     <span class="status-dot ${statusClass}"></span>
-                    <span class="text-sm font-medium text-gray-800 truncate">${run.backup_file}</span>
+                    <span class="text-sm font-medium text-gray-800 truncate flex-1">${run.backup_file}</span>
+                    <button class="delete-btn text-gray-300 hover:text-red-500 p-1" title="删除此任务"
+                            onclick="event.stopPropagation(); confirmDeleteRun('${run.run_id}', '${run.backup_file}')">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </button>
                 </div>
                 <div class="text-xs text-gray-400 ml-4">
                     #${run.run_id} · ${statusText} · ${progressPct}%
@@ -478,6 +500,80 @@ window.addEventListener('resize', () => {
 
 refreshRuns();
 pollingTimer = setInterval(refreshRuns, 3000);
+
+// ==================== 删除功能 ====================
+async function deleteRun(runId) {
+    try {
+        const resp = await fetch(`/api/runs/${runId}`, { method: 'DELETE' });
+        const result = await resp.json();
+        if (result.status === 'ok') {
+            if (currentRunId === runId) {
+                currentRunId = null;
+                wasCurrentRunning = false;
+                document.getElementById('empty-state').classList.remove('hidden');
+                document.getElementById('detail-view').classList.add('hidden');
+            }
+            await refreshRuns();
+        } else {
+            alert('删除失败: ' + (result.error || '未知错误'));
+        }
+    } catch (e) {
+        alert('删除失败: ' + e.message);
+    }
+}
+
+function confirmDeleteRun(runId, backupName) {
+    const name = backupName || allRuns.find(r => r.run_id === runId)?.backup_file || runId;
+    showModal(
+        '确认删除',
+        `确定要删除任务 "${name}" 的所有进度记录吗？<br><span class="text-xs text-gray-400">此操作不可恢复！</span>`,
+        [
+            { text: '取消', class: 'px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200' },
+            { text: '确认删除', class: 'px-4 py-2 text-sm text-white bg-red-500 rounded-lg hover:bg-red-600', primary: true, action: () => deleteRun(runId) },
+        ]
+    );
+}
+
+// ==================== 通用模态对话框 ====================
+function showModal(title, bodyHtml, buttons) {
+    // 移除已有 modal
+    const existing = document.querySelector('.modal-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal-box">
+            <h3 class="text-lg font-semibold text-gray-800 mb-3">${title}</h3>
+            <div class="text-sm text-gray-600 mb-6">${bodyHtml}</div>
+            <div class="flex justify-end gap-3">
+                ${buttons.map((b, i) => `<button id="modal-btn-${i}" class="${b.class}">${b.text}</button>`).join('')}
+            </div>
+        </div>
+    `;
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+
+    document.body.appendChild(overlay);
+
+    buttons.forEach((b, i) => {
+        const btn = document.getElementById(`modal-btn-${i}`);
+        btn.addEventListener('click', () => {
+            overlay.remove();
+            if (b.action) b.action();
+        });
+    });
+}
+
+// 全局键盘快捷键：ESC 关闭 modal
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const overlay = document.querySelector('.modal-overlay');
+        if (overlay) overlay.remove();
+    }
+});
 </script>
 </body>
 </html>
