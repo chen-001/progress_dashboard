@@ -27,6 +27,7 @@ templates = Environment(loader=FileSystemLoader(Path(__file__).parent / "templat
 
 # ==================== 数据模型 ====================
 
+
 def parse_jsonl(filepath: str) -> dict:
     """解析一个 JSONL 文件，返回 {run_id: {records, status, meta}} 的分组结构"""
     runs = {}
@@ -56,8 +57,12 @@ def parse_jsonl(filepath: str) -> dict:
                 elif record.get("status") == "completed":
                     runs[run_id]["status"] = "completed"
                     runs[run_id]["meta"]["end_ts"] = record.get("ts", "")
-                    runs[run_id]["meta"]["total_collected"] = record.get("total_collected", 0)
-                    runs[run_id]["meta"]["total_batches_done"] = record.get("total_batches_done", 0)
+                    runs[run_id]["meta"]["total_collected"] = record.get(
+                        "total_collected", 0
+                    )
+                    runs[run_id]["meta"]["total_batches_done"] = record.get(
+                        "total_batches_done", 0
+                    )
                 else:
                     runs[run_id]["records"].append(record)
     except FileNotFoundError:
@@ -110,7 +115,9 @@ def build_jobs(filepath: str) -> list[dict]:
             for r in run_data["records"]:
                 adjusted = dict(r)
                 adjusted["batch"] = r.get("batch", 0) + cumulative_batch_offset
-                adjusted["collected"] = r.get("collected", 0) + cumulative_collected_offset
+                adjusted["collected"] = (
+                    r.get("collected", 0) + cumulative_collected_offset
+                )
                 adjusted["elapsed"] = r.get("elapsed", 0) + cumulative_elapsed_offset
                 all_records.append(adjusted)
             # 累加偏移量（用最后一次备份的数据）
@@ -124,7 +131,9 @@ def build_jobs(filepath: str) -> list[dict]:
         last_meta = last_run["meta"]
         first_meta = first_run["meta"]
         # 总批次 = 之前完成的批次 + 最后一次运行预估的总批次
-        total_batches = cumulative_batch_before_last_run + last_meta.get("total_batches", 0)
+        total_batches = cumulative_batch_before_last_run + last_meta.get(
+            "total_batches", 0
+        )
 
         # 任务完成时，用 completed 记录生成一条合成最终记录
         if not is_running and last_meta.get("end_ts") and all_records:
@@ -134,8 +143,12 @@ def build_jobs(filepath: str) -> list[dict]:
             elapsed = 0.0
             if start_ts:
                 from datetime import datetime
+
                 try:
-                    elapsed = (datetime.fromisoformat(end_ts) - datetime.fromisoformat(start_ts)).total_seconds()
+                    elapsed = (
+                        datetime.fromisoformat(end_ts)
+                        - datetime.fromisoformat(start_ts)
+                    ).total_seconds()
                 except ValueError:
                     elapsed = prev_rec.get("elapsed", 0)
             if elapsed <= 0:
@@ -144,24 +157,29 @@ def build_jobs(filepath: str) -> list[dict]:
             if batch_done <= 0:
                 batch_done = total_batches
             total_elapsed = cumulative_elapsed_before_last_run + elapsed
-            all_records.append({
-                "batch": cumulative_batch_before_last_run + batch_done,
-                "collected": cumulative_collected_before_last_run + last_meta.get("total_collected", 0),
-                "elapsed": total_elapsed,
-                "interval": total_elapsed - prev_rec.get("elapsed", 0),
-                "ts": end_ts,
-            })
+            all_records.append(
+                {
+                    "batch": cumulative_batch_before_last_run + batch_done,
+                    "collected": cumulative_collected_before_last_run
+                    + last_meta.get("total_collected", 0),
+                    "elapsed": total_elapsed,
+                    "interval": total_elapsed - prev_rec.get("elapsed", 0),
+                    "ts": end_ts,
+                }
+            )
 
         job_id = "+".join(job_runs)  # 合并后的 job 标识
-        result.append({
-            "job_id": job_id,
-            "run_ids": job_runs,
-            "records": all_records,
-            "status": last_run["status"],
-            "is_running": is_running,
-            "meta": {**first_meta, "total_batches": total_batches},
-            "n_runs": len(job_runs),
-        })
+        result.append(
+            {
+                "job_id": job_id,
+                "run_ids": job_runs,
+                "records": all_records,
+                "status": last_run["status"],
+                "is_running": is_running,
+                "meta": {**first_meta, "total_batches": total_batches},
+                "n_runs": len(job_runs),
+            }
+        )
     return result
 
 
@@ -186,34 +204,41 @@ def scan_all_runs() -> list[dict]:
             progress = batch_count / total_batches if total_batches > 0 else 0
             throughput = collected / elapsed if elapsed > 0 else 0
             intervals = [r["interval"] for r in records if "interval" in r]
-            etas = compute_etas(intervals, total_batches - batch_count) if total_batches > batch_count else {}
-            all_runs.append({
-                "run_id": job["job_id"],
-                "backup_file": display_name,
-                "status": job["status"],
-                "is_running": job["is_running"],
-                "progress": min(progress, 1.0),
-                "batch_count": batch_count,
-                "total_batches": total_batches,
-                "collected": collected,
-                "total_tasks": total_tasks,
-                "elapsed": elapsed,
-                "throughput": throughput,
-                "etas": etas,
-                "start_ts": meta.get("start_ts", ""),
-                "end_ts": meta.get("end_ts", ""),
-                "last_backup_ts": last_record.get("ts", ""),
-                "filepath": filepath,
-                "total_dates": meta.get("total_dates", 0),
-                "completed_dates": last_record.get("completed_dates", 0),
-                "n_intervals": len(intervals),
-                "n_runs": job["n_runs"],
-            })
+            etas = (
+                compute_etas(intervals, total_batches - batch_count)
+                if total_batches > batch_count
+                else {}
+            )
+            all_runs.append(
+                {
+                    "run_id": job["job_id"],
+                    "backup_file": display_name,
+                    "status": job["status"],
+                    "is_running": job["is_running"],
+                    "progress": min(progress, 1.0),
+                    "batch_count": batch_count,
+                    "total_batches": total_batches,
+                    "collected": collected,
+                    "total_tasks": total_tasks,
+                    "elapsed": elapsed,
+                    "throughput": throughput,
+                    "etas": etas,
+                    "start_ts": meta.get("start_ts", ""),
+                    "end_ts": meta.get("end_ts", ""),
+                    "last_backup_ts": last_record.get("ts", ""),
+                    "filepath": filepath,
+                    "total_dates": meta.get("total_dates", 0),
+                    "completed_dates": last_record.get("completed_dates", 0),
+                    "n_intervals": len(intervals),
+                    "n_runs": job["n_runs"],
+                }
+            )
     all_runs.sort(key=lambda x: x["start_ts"], reverse=True)
     return all_runs
 
 
 # ==================== ETA 估算引擎 ====================
+
 
 def compute_etas(intervals: list[float], remaining_batches: int) -> dict:
     """4 种 ETA 估算算法"""
@@ -237,6 +262,7 @@ def compute_etas(intervals: list[float], remaining_batches: int) -> dict:
 
 
 # ==================== API 路由 ====================
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -265,15 +291,21 @@ async def api_run_detail(run_id: str):
                 collected_list = [r["collected"] for r in records if "collected" in r]
                 timestamps = [r.get("ts", "") for r in records]
                 total_batches = job["meta"].get("total_batches", 0)
-                eta_series = {"global_avg": [], "window_5": [], "ewma": [], "median": []}
+                eta_series = {
+                    "global_avg": [],
+                    "window_5": [],
+                    "ewma": [],
+                    "median": [],
+                }
                 for i in range(len(intervals)):
                     remaining = total_batches - batches[i] if i < len(batches) else 0
-                    etas = compute_etas(intervals[:i+1], remaining)
+                    etas = compute_etas(intervals[: i + 1], remaining)
                     for key in eta_series:
                         eta_series[key].append(etas.get(key, 0))
                 throughput_list = [
                     round(collected_list[i] / elapsed_list[i], 1)
-                    if i < len(elapsed_list) and elapsed_list[i] > 0 else 0
+                    if i < len(elapsed_list) and elapsed_list[i] > 0
+                    else 0
                     for i in range(len(collected_list))
                 ]
                 batch_size = job["meta"].get("backup_batch_size", 0)
@@ -281,22 +313,24 @@ async def api_run_detail(run_id: str):
                     round(batch_size / iv, 1) if iv > 0 and batch_size > 0 else 0
                     for iv in intervals
                 ]
-                return JSONResponse({
-                    "run_id": run_id,
-                    "status": job["status"],
-                    "filepath": filepath,
-                    "meta": job["meta"],
-                    "intervals": intervals,
-                    "batches": batches,
-                    "elapsed": elapsed_list,
-                    "collected": collected_list,
-                    "throughput": throughput_list,
-                    "instant_throughput": instant_throughput,
-                    "timestamps": timestamps,
-                    "eta_series": eta_series,
-                    "total_batches": total_batches,
-                    "n_runs": job["n_runs"],
-                })
+                return JSONResponse(
+                    {
+                        "run_id": run_id,
+                        "status": job["status"],
+                        "filepath": filepath,
+                        "meta": job["meta"],
+                        "intervals": intervals,
+                        "batches": batches,
+                        "elapsed": elapsed_list,
+                        "collected": collected_list,
+                        "throughput": throughput_list,
+                        "instant_throughput": instant_throughput,
+                        "timestamps": timestamps,
+                        "eta_series": eta_series,
+                        "total_batches": total_batches,
+                        "n_runs": job["n_runs"],
+                    }
+                )
     return JSONResponse({"error": "run not found"}, status_code=404)
 
 
@@ -314,15 +348,21 @@ async def api_run_latest(run_id: str):
                 intervals = [r["interval"] for r in records if "interval" in r]
                 batch_count = last.get("batch", 0)
                 total_batches = job["meta"].get("total_batches", 0)
-                etas = compute_etas(intervals, total_batches - batch_count) if total_batches > batch_count else {}
-                return JSONResponse({
-                    "status": job["status"],
-                    "last_record": last,
-                    "etas": etas,
-                    "batch_count": batch_count,
-                    "total_batches": total_batches,
-                    "n_records": len(records),
-                })
+                etas = (
+                    compute_etas(intervals, total_batches - batch_count)
+                    if total_batches > batch_count
+                    else {}
+                )
+                return JSONResponse(
+                    {
+                        "status": job["status"],
+                        "last_record": last,
+                        "etas": etas,
+                        "batch_count": batch_count,
+                        "total_batches": total_batches,
+                        "n_records": len(records),
+                    }
+                )
     return JSONResponse({"error": "run not found"}, status_code=404)
 
 
@@ -373,18 +413,76 @@ async def api_delete_run(run_id: str):
     with open(target_file, "w", encoding="utf-8") as f:
         f.writelines(remaining_lines)
 
-    return JSONResponse({
-        "status": "ok",
-        "message": f"已删除 {removed_count} 条记录",
-        "removed": removed_count,
-        "filepath": target_file,
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "message": f"已删除 {removed_count} 条记录",
+            "removed": removed_count,
+            "filepath": target_file,
+        }
+    )
+
+
+# ==================== 因子任务管理代理路由 ====================
+TASK_DAEMON_URL = os.environ.get("FACTOR_TASK_URL", "http://127.0.0.1:9099")
+
+
+def _proxy_to_daemon(
+    path: str, method: str = "GET", body: dict | None = None
+) -> dict | list:
+    """将请求代理到 factor_taskd 守护进程"""
+    import urllib.request, urllib.error
+
+    url = f"{TASK_DAEMON_URL}{path}"
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, ConnectionRefusedError):
+        return {"error": "factor_taskd 未运行"}
+
+
+@app.get("/api/tasks")
+async def proxy_list_tasks():
+    return JSONResponse(_proxy_to_daemon("/api/tasks"))
+
+
+@app.post("/api/tasks")
+async def proxy_submit_task(request: Request):
+    body = await request.json()
+    return JSONResponse(_proxy_to_daemon("/api/tasks", "POST", body))
+
+
+@app.get("/api/tasks/{task_id}")
+async def proxy_get_task(task_id: int):
+    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}"))
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def proxy_cancel_task(task_id: int):
+    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}/cancel", "POST"))
+
+
+@app.post("/api/tasks/{task_id}/adjust-njobs")
+async def proxy_adjust_njobs(task_id: int, request: Request):
+    body = await request.json()
+    return JSONResponse(
+        _proxy_to_daemon(f"/api/tasks/{task_id}/adjust-njobs", "POST", body)
+    )
+
+
+@app.get("/api/tasks/{task_id}/log")
+async def proxy_get_task_log(task_id: int):
+    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}/log"))
 
 
 # ==================== 启动入口 ====================
 
 if __name__ == "__main__":
     import uvicorn
+
     parser = argparse.ArgumentParser(description="run_pools_queue 进度总控监控")
     parser.add_argument("--port", type=int, default=8080, help="服务端口")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="服务地址")
