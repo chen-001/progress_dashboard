@@ -27,6 +27,20 @@
         .delete-btn:hover { color: #ef4444 !important; }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
         .modal-box { background: white; border-radius: 12px; padding: 24px; max-width: 420px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+        .log-modal-box { max-width: 960px; width: 95%; max-height: 95vh; display: flex; flex-direction: column; }
+        .log-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+        .log-content {
+            background: #fafafa; color: #1e1e1e;
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 12px; padding: 16px; border: 1px solid #e5e7eb;
+            border-radius: 8px; overflow: auto; flex: 1; min-height: 200px;
+            white-space: pre-wrap; word-break: break-all; line-height: 1.6;
+        }
+        .log-content::-webkit-scrollbar { width: 8px; height: 8px; }
+        .log-content::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        .log-content::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        .log-content::-webkit-scrollbar-thumb:hover { background: #a1a1a1; }
+        .log-footer { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -554,6 +568,10 @@ window.addEventListener('resize', () => {
 });
 
 refreshRuns();
+const savedTab = localStorage.getItem('dashboardTab');
+if (savedTab === 'tasks') {
+    switchTab('tasks');
+}
 pollingTimer = setInterval(refreshRuns, 3000);
 
 // ==================== 删除功能 ====================
@@ -634,6 +652,7 @@ document.addEventListener('keydown', (e) => {
 let tasksPollingTimer = null;
 
 function switchTab(tab) {
+    localStorage.setItem('dashboardTab', tab);
     const monitorBtn = document.getElementById('tab-monitor');
     const tasksBtn = document.getElementById('tab-tasks');
     const monitorPanel = document.getElementById('monitor-panel');
@@ -695,10 +714,14 @@ async function refreshTasks() {
                 }
             }
             const statusClass = t.status === 'running' ? 'text-green-600' : t.status === 'completed' ? 'text-gray-500' : t.status === 'failed' || t.status === 'cancelled' ? 'text-red-500' : 'text-yellow-600';
-            const actions = t.status === 'running' ? `
+            const runActions = t.status === 'running' ? `
                 <button onclick="cancelTask(${t.id})" class="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100 mr-1">取消</button>
-                <button onclick="adjustNjobs(${t.id})" class="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100">调节n_jobs</button>
+                <button onclick="adjustNjobs(${t.id})" class="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 mr-1">调节n_jobs</button>
             ` : '';
+            const actions = `
+                <button onclick="viewTaskLog(${t.id})" class="text-xs px-2 py-1 bg-gray-50 text-gray-600 rounded hover:bg-gray-100 mr-1">日志</button>
+                ${runActions}
+            `;
             return `<tr class="border-b border-gray-100">
                 <td class="py-2 pr-3">${t.id}</td>
                 <td class="py-2 pr-3 font-medium">${t.name || '-'}</td>
@@ -742,6 +765,64 @@ async function adjustNjobs(id) {
     } catch (e) {
         alert('调节失败: ' + e.message);
     }
+}
+
+// ==================== 查看任务日志 ====================
+function viewTaskLog(taskId) {
+    const existing = document.querySelector('.modal-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal-box log-modal-box">
+            <div class="log-header mb-4">
+                <h3 class="text-lg font-semibold text-gray-800">任务 #${taskId} 运行日志</h3>
+                <button onclick="this.closest('.modal-overlay').remove()"
+                        class="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="log-content" id="log-content-${taskId}">
+                <div class="text-center text-gray-400 py-8">加载中...</div>
+            </div>
+            <div class="log-footer mt-4">
+                <button id="log-load-btn-${taskId}" class="hidden"></button>
+                <span id="log-info-${taskId}" class="text-xs text-gray-400"></span>
+                <button onclick="this.closest('.modal-overlay').remove()"
+                        class="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 ml-auto">关闭</button>
+            </div>
+        </div>
+    `;
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+
+    const contentEl = document.getElementById('log-content-' + taskId);
+    if (!contentEl) return;
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/tasks/' + taskId + '/log?offset=0&limit=1000', true);
+    xhr.timeout = 10000;
+    xhr.ontimeout = function() { contentEl.textContent = '请求超时，请重试'; };
+    xhr.onerror = function() { contentEl.textContent = '网络错误'; };
+    xhr.onload = function() {
+        if (xhr.status !== 200) { contentEl.textContent = '请求失败: HTTP ' + xhr.status; return; }
+        try {
+            var data = JSON.parse(xhr.responseText);
+        } catch(e) { contentEl.textContent = '解析失败: ' + e.message; return; }
+        if (data.error) { contentEl.textContent = '日志服务不可用'; return; }
+        var lines = data.total_lines || 0;
+        var logText = data.log || '(日志为空)';
+        contentEl.textContent = logText;
+        contentEl.scrollTop = contentEl.scrollHeight;
+        var infoEl = document.getElementById('log-info-' + taskId);
+        if (infoEl) infoEl.textContent = lines > 0 ? '共 ' + lines + ' 行' : '';
+    };
+    xhr.send();
 }
 
 </script>

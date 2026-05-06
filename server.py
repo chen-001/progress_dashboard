@@ -474,8 +474,12 @@ async def proxy_adjust_njobs(task_id: int, request: Request):
 
 
 @app.get("/api/tasks/{task_id}/log")
-async def proxy_get_task_log(task_id: int):
-    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}/log"))
+async def proxy_get_task_log(task_id: int, request: Request):
+    query = str(request.query_params)
+    path = f"/api/tasks/{task_id}/log"
+    if query:
+        path += "?" + query
+    return JSONResponse(_proxy_to_daemon(path))
 
 
 # ==================== 启动入口 ====================
