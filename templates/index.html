@@ -208,6 +208,7 @@
                         <th class="pb-2 pr-3">PID</th>
                         <th class="pb-2 pr-3">进度</th>
                         <th class="pb-2 pr-3">创建时间</th>
+                        <th class="pb-2 pr-3">完成时间</th>
                         <th class="pb-2">操作</th>
                     </tr></thead>
                     <tbody id="tasks-tbody"></tbody>
@@ -720,6 +721,7 @@ async function refreshTasks() {
             ` : '';
             const actions = `
                 <button onclick="viewTaskLog(${t.id})" class="text-xs px-2 py-1 bg-gray-50 text-gray-600 rounded hover:bg-gray-100 mr-1">日志</button>
+                <button onclick="viewSubprocessLog(${t.id})" class="text-xs px-2 py-1 bg-gray-50 text-gray-600 rounded hover:bg-gray-100 mr-1">子进程日志</button>
                 ${runActions}
             `;
             return `<tr class="border-b border-gray-100">
@@ -730,6 +732,7 @@ async function refreshTasks() {
                 <td class="py-2 pr-3 text-xs text-gray-400">${t.pid || '-'}</td>
                 <td class="py-2 pr-3 text-xs">${progress}</td>
                 <td class="py-2 pr-3 text-xs text-gray-400">${t.created_at ? new Date(t.created_at).toLocaleString() : '-'}</td>
+                <td class="py-2 pr-3 text-xs text-gray-400">${t.finished_at ? new Date(t.finished_at).toLocaleString() : '-'}</td>
                 <td class="py-2">${actions}</td>
             </tr>`;
         }).join('');
@@ -767,8 +770,8 @@ async function adjustNjobs(id) {
     }
 }
 
-// ==================== 查看任务日志 ====================
-function viewTaskLog(taskId) {
+// ==================== 查看日志（通用） ====================
+function viewLog(taskId, apiPath, title) {
     const existing = document.querySelector('.modal-overlay');
     if (existing) existing.remove();
 
@@ -777,7 +780,7 @@ function viewTaskLog(taskId) {
     overlay.innerHTML = `
         <div class="modal-box log-modal-box">
             <div class="log-header mb-4">
-                <h3 class="text-lg font-semibold text-gray-800">任务 #${taskId} 运行日志</h3>
+                <h3 class="text-lg font-semibold text-gray-800">任务 #${taskId} ${title}</h3>
                 <button onclick="this.closest('.modal-overlay').remove()"
                         class="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -805,7 +808,7 @@ function viewTaskLog(taskId) {
     if (!contentEl) return;
 
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', '/api/tasks/' + taskId + '/log?offset=0&limit=1000', true);
+    xhr.open('GET', apiPath + '?offset=0&limit=1000', true);
     xhr.timeout = 10000;
     xhr.ontimeout = function() { contentEl.textContent = '请求超时，请重试'; };
     xhr.onerror = function() { contentEl.textContent = '网络错误'; };
@@ -823,6 +826,14 @@ function viewTaskLog(taskId) {
         if (infoEl) infoEl.textContent = lines > 0 ? '共 ' + lines + ' 行' : '';
     };
     xhr.send();
+}
+
+function viewTaskLog(taskId) {
+    viewLog(taskId, '/api/tasks/' + taskId + '/log', '运行日志');
+}
+
+function viewSubprocessLog(taskId) {
+    viewLog(taskId, '/api/tasks/' + taskId + '/subprocess-log', '子进程运行日志');
 }
 
 </script>

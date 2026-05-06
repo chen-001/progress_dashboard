@@ -482,6 +482,15 @@ async def proxy_get_task_log(task_id: int, request: Request):
     return JSONResponse(_proxy_to_daemon(path))
 
 
+@app.get("/api/tasks/{task_id}/subprocess-log")
+async def proxy_get_subprocess_log(task_id: int, request: Request):
+    query = str(request.query_params)
+    path = f"/api/tasks/{task_id}/subprocess-log"
+    if query:
+        path += "?" + query
+    return JSONResponse(_proxy_to_daemon(path))
+
+
 # ==================== 启动入口 ====================
 
 if __name__ == "__main__":
