@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import argparse
+import asyncio
 from statistics import mean, median
 from pathlib import Path
 
@@ -267,7 +268,11 @@ def compute_etas(intervals: list[float], remaining_batches: int) -> dict:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     template = templates.get_template("index.html")
-    return template.render()
+    # no-store：HTML 内联了 JS，必须每次拉取最新版本，
+    # 否则浏览器缓存旧版（含旧 bug 的 JS），更新后用户不硬刷新就拿不到新代码。
+    return HTMLResponse(
+        template.render(), headers={"Cache-Control": "no-store, must-revalidate"}
+    )
 
 
 @app.get("/api/runs")
@@ -430,8 +435,8 @@ TASK_DAEMON_URL = os.environ.get("FACTOR_TASK_URL", "http://127.0.0.1:9099")
 def _proxy_to_daemon(
     path: str, method: str = "GET", body: dict | None = None
 ) -> dict | list:
-    """将请求代理到 factor_taskd 守护进程"""
-    import urllib.request, urllib.error
+    """将请求代理到 factor_taskd 守护进程（同步阻塞，必须经 to_thread 调用）"""
+    import urllib.request
 
     url = f"{TASK_DAEMON_URL}{path}"
     data = json.dumps(body).encode() if body else None
@@ -440,37 +445,50 @@ def _proxy_to_daemon(
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, ConnectionRefusedError):
+    except OSError:
+        # 涵盖 URLError / HTTPError / ConnectionRefusedError / TimeoutError。
+        # daemon 偶发慢响应时 urlopen 抛 TimeoutError，必须在此吞掉，
+        # 否则逃逸为 ASGI 异常导致连接异常关闭、浏览器连接池耗尽而卡死。
         return {"error": "factor_taskd 未运行"}
+
+
+async def _proxy_json(
+    path: str, method: str = "GET", body: dict | None = None
+) -> JSONResponse:
+    """异步代理：在线程池执行同步 urllib 调用，避免阻塞事件循环。
+
+    daemon 慢响应时单个请求最多阻塞线程池 5s（timeout），但事件循环
+    不受影响，其他请求（含关闭弹窗等前端交互）仍可正常响应。
+    """
+    result = await asyncio.to_thread(_proxy_to_daemon, path, method, body)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/tasks")
 async def proxy_list_tasks():
-    return JSONResponse(_proxy_to_daemon("/api/tasks"))
+    return await _proxy_json("/api/tasks")
 
 
 @app.post("/api/tasks")
 async def proxy_submit_task(request: Request):
     body = await request.json()
-    return JSONResponse(_proxy_to_daemon("/api/tasks", "POST", body))
+    return await _proxy_json("/api/tasks", "POST", body)
 
 
 @app.get("/api/tasks/{task_id}")
 async def proxy_get_task(task_id: int):
-    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}"))
+    return await _proxy_json(f"/api/tasks/{task_id}")
 
 
 @app.post("/api/tasks/{task_id}/cancel")
 async def proxy_cancel_task(task_id: int):
-    return JSONResponse(_proxy_to_daemon(f"/api/tasks/{task_id}/cancel", "POST"))
+    return await _proxy_json(f"/api/tasks/{task_id}/cancel", "POST")
 
 
 @app.post("/api/tasks/{task_id}/adjust-njobs")
 async def proxy_adjust_njobs(task_id: int, request: Request):
     body = await request.json()
-    return JSONResponse(
-        _proxy_to_daemon(f"/api/tasks/{task_id}/adjust-njobs", "POST", body)
-    )
+    return await _proxy_json(f"/api/tasks/{task_id}/adjust-njobs", "POST", body)
 
 
 @app.get("/api/tasks/{task_id}/log")
@@ -479,7 +497,7 @@ async def proxy_get_task_log(task_id: int, request: Request):
     path = f"/api/tasks/{task_id}/log"
     if query:
         path += "?" + query
-    return JSONResponse(_proxy_to_daemon(path))
+    return await _proxy_json(path)
 
 
 @app.get("/api/tasks/{task_id}/subprocess-log")
@@ -488,7 +506,7 @@ async def proxy_get_subprocess_log(task_id: int, request: Request):
     path = f"/api/tasks/{task_id}/subprocess-log"
     if query:
         path += "?" + query
-    return JSONResponse(_proxy_to_daemon(path))
+    return await _proxy_json(path)
 
 
 # ==================== 启动入口 ====================

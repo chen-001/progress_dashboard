@@ -568,12 +568,6 @@ window.addEventListener('resize', () => {
     chartThroughput && chartThroughput.resize();
 });
 
-refreshRuns();
-const savedTab = localStorage.getItem('dashboardTab');
-if (savedTab === 'tasks') {
-    switchTab('tasks');
-}
-pollingTimer = setInterval(refreshRuns, 3000);
 
 // ==================== 删除功能 ====================
 async function deleteRun(runId) {
@@ -645,7 +639,12 @@ function showModal(title, bodyHtml, buttons) {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         const overlay = document.querySelector('.modal-overlay');
-        if (overlay) overlay.remove();
+        if (overlay) {
+            // 日志弹窗需停止轮询并 abort 进行中的请求，避免连接泄漏
+            const tid = overlay.getAttribute('data-log-task');
+            if (tid) stopLogPolling(parseInt(tid));
+            overlay.remove();
+        }
     }
 });
 
@@ -770,18 +769,47 @@ async function adjustNjobs(id) {
     }
 }
 
-// ==================== 查看日志（通用） ====================
-function viewLog(taskId, apiPath, title) {
-    const existing = document.querySelector('.modal-overlay');
-    if (existing) existing.remove();
+// ==================== 查看日志（通用，支持实时刷新） ====================
+// 保存每个日志弹窗的轮询定时器与状态，按 taskId 隔离。
+// 关键：每个状态持有当前进行中的 xhr 引用，关闭弹窗时 abort，
+// 防止未完成请求占用浏览器连接池（连接堆积会导致页面卡死）。
+const _logPollers = {};
 
-    const overlay = document.createElement('div');
+function stopLogPolling(taskId) {
+    var st = _logPollers[taskId];
+    if (st) {
+        if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+        if (st.xhr) { try { st.xhr.abort(); } catch(e) {} st.xhr = null; }
+    }
+    delete _logPollers[taskId];
+}
+
+// 关闭日志弹窗：停止轮询 + abort 进行中的请求 + 移除 DOM
+function closeLogModal(taskId) {
+    stopLogPolling(taskId);
+    var overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+}
+
+function viewLog(taskId, apiPath, title) {
+    // 先移除已有弹窗并停止其轮询（避免重复打开导致轮询泄漏）
+    var existing = document.querySelector('.modal-overlay');
+    if (existing) {
+        var oldTid = existing.getAttribute('data-log-task');
+        if (oldTid) stopLogPolling(parseInt(oldTid));
+        existing.remove();
+    }
+    // 同 taskId 的旧轮询兜底清理
+    stopLogPolling(taskId);
+
+    var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    overlay.setAttribute('data-log-task', taskId);
     overlay.innerHTML = `
         <div class="modal-box log-modal-box">
             <div class="log-header mb-4">
                 <h3 class="text-lg font-semibold text-gray-800">任务 #${taskId} ${title}</h3>
-                <button onclick="this.closest('.modal-overlay').remove()"
+                <button onclick="closeLogModal(${taskId})"
                         class="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -792,40 +820,110 @@ function viewLog(taskId, apiPath, title) {
                 <div class="text-center text-gray-400 py-8">加载中...</div>
             </div>
             <div class="log-footer mt-4">
-                <button id="log-load-btn-${taskId}" class="hidden"></button>
-                <span id="log-info-${taskId}" class="text-xs text-gray-400"></span>
-                <button onclick="this.closest('.modal-overlay').remove()"
+                <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" id="log-autorefresh-${taskId}" checked
+                           onchange="toggleLogAutoRefresh(${taskId}, '${apiPath}')"
+                           class="w-4 h-4 text-blue-600 rounded">
+                    <span class="text-sm text-gray-600">自动刷新</span>
+                </label>
+                <span id="log-info-${taskId}" class="text-xs text-gray-400 ml-3"></span>
+                <button onclick="closeLogModal(${taskId})"
                         class="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 ml-auto">关闭</button>
             </div>
         </div>
     `;
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) overlay.remove();
+    overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) closeLogModal(taskId);
     });
     document.body.appendChild(overlay);
 
-    const contentEl = document.getElementById('log-content-' + taskId);
-    if (!contentEl) return;
+    _logPollers[taskId] = { timer: null, xhr: null, interval: 2000, autoScroll: true, loaded: false, autoRefresh: true };
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', apiPath + '?offset=0&limit=1000', true);
+    var contentEl = document.getElementById('log-content-' + taskId);
+    if (contentEl) {
+        contentEl.addEventListener('scroll', function() {
+            var atBottom = contentEl.scrollHeight - contentEl.scrollTop - contentEl.clientHeight < 30;
+            var st = _logPollers[taskId];
+            if (st) st.autoScroll = atBottom;
+        });
+    }
+
+    fetchLogOnce(taskId, apiPath);
+}
+
+function fetchLogOnce(taskId, apiPath) {
+    var st = _logPollers[taskId];
+    if (!st) return;
+    var contentEl = document.getElementById('log-content-' + taskId);
+    if (!contentEl) { stopLogPolling(taskId); return; }
+    // abort 上一个未完成的请求，避免连接堆积
+    if (st.xhr) { try { st.xhr.abort(); } catch(e) {} }
+    var xhr = new XMLHttpRequest();
+    st.xhr = xhr;
+    // 加时间戳防止浏览器缓存（日志是动态内容）
+    xhr.open('GET', apiPath + '?offset=0&limit=1000&_t=' + Date.now(), true);
     xhr.timeout = 10000;
-    xhr.ontimeout = function() { contentEl.textContent = '请求超时，请重试'; };
-    xhr.onerror = function() { contentEl.textContent = '网络错误'; };
+    var isFirst = !st.loaded;
+    // 串行轮询：请求完成后再调度下一次，避免 daemon 慢时请求堆积耗尽连接池
+    var scheduleNext = function() {
+        st.xhr = null;
+        if (_logPollers[taskId] && st.autoRefresh) {
+            st.timer = setTimeout(function() { fetchLogOnce(taskId, apiPath); }, st.interval);
+        }
+    };
     xhr.onload = function() {
-        if (xhr.status !== 200) { contentEl.textContent = '请求失败: HTTP ' + xhr.status; return; }
-        try {
-            var data = JSON.parse(xhr.responseText);
-        } catch(e) { contentEl.textContent = '解析失败: ' + e.message; return; }
-        if (data.error) { contentEl.textContent = '日志服务不可用'; return; }
+        if (xhr.status !== 200) {
+            if (isFirst) contentEl.textContent = '请求失败: HTTP ' + xhr.status;
+            return scheduleNext();
+        }
+        try { var data = JSON.parse(xhr.responseText); }
+        catch(e) {
+            if (isFirst) contentEl.textContent = '解析失败: ' + e.message;
+            return scheduleNext();
+        }
+        if (data.error) {
+            if (isFirst) contentEl.textContent = '日志服务不可用';
+            return scheduleNext();
+        }
         var lines = data.total_lines || 0;
         var logText = data.log || '(日志为空)';
         contentEl.textContent = logText;
-        contentEl.scrollTop = contentEl.scrollHeight;
+        st.loaded = true;
+        if (st.autoScroll) contentEl.scrollTop = contentEl.scrollHeight;
         var infoEl = document.getElementById('log-info-' + taskId);
-        if (infoEl) infoEl.textContent = lines > 0 ? '共 ' + lines + ' 行' : '';
+        if (infoEl) infoEl.textContent = lines > 0 ? '共 ' + lines + ' 行 · 自动刷新中' : '';
+        scheduleNext();
+    };
+    xhr.onerror = function() {
+        if (isFirst) contentEl.textContent = '网络错误，等待重试...';
+        scheduleNext();
+    };
+    xhr.ontimeout = function() {
+        if (isFirst) contentEl.textContent = '请求超时，等待重试...';
+        scheduleNext();
     };
     xhr.send();
+}
+
+function toggleLogAutoRefresh(taskId, apiPath) {
+    var cb = document.getElementById('log-autorefresh-' + taskId);
+    var infoEl = document.getElementById('log-info-' + taskId);
+    var st = _logPollers[taskId];
+    if (!cb) return;
+    if (cb.checked) {
+        if (!st) { _logPollers[taskId] = { timer: null, xhr: null, interval: 2000, autoScroll: true, loaded: false, autoRefresh: true }; st = _logPollers[taskId]; }
+        st.autoRefresh = true;
+        // 仅当没有待发请求时才启动下一轮
+        if (!st.timer && !st.xhr) st.timer = setTimeout(function(){ fetchLogOnce(taskId, apiPath); }, st.interval);
+        if (infoEl) infoEl.textContent = (infoEl.textContent.replace(/ · (自动刷新中|已暂停)/g, '')) + ' · 自动刷新中';
+    } else {
+        if (st) {
+            st.autoRefresh = false;
+            if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+            if (st.xhr) { try { st.xhr.abort(); } catch(e) {} st.xhr = null; }
+        }
+        if (infoEl) infoEl.textContent = (infoEl.textContent.replace(/ · (自动刷新中|已暂停)/g, '')) + ' · 已暂停';
+    }
 }
 
 function viewTaskLog(taskId) {
@@ -835,6 +933,18 @@ function viewTaskLog(taskId) {
 function viewSubprocessLog(taskId) {
     viewLog(taskId, '/api/tasks/' + taskId + '/subprocess-log', '子进程运行日志');
 }
+
+// ==================== 初始化（必须在所有 let/const 声明之后执行） ====================
+// 原本位于 script 前部，导致刷新页面时（localStorage 记忆了 'tasks' tab）
+// switchTab('tasks') 引用尚未执行到的 let tasksPollingTimer（line 658 TDZ），
+// ReferenceError 中断整个 script 块 → 后续 let/const 声明全部未执行 →
+// _logPollers 未定义 → 点击"日志"按钮静默失败。移至末尾彻底消除该时序问题。
+refreshRuns();
+{
+    const savedTab = localStorage.getItem('dashboardTab');
+    if (savedTab === 'tasks') switchTab('tasks');
+}
+pollingTimer = setInterval(refreshRuns, 3000);
 
 </script>
 </body>
